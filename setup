@@ -4,15 +4,14 @@ source ./config
 
 cp ./ss-user@.service /etc/systemd/system/ss-user@.service
 cp ./ssctl /usr/local/bin/ssctl
+cp ./sslimit /usr/local/bin/sslimit
+cp ./ssmgr /usr/local/bin/ssmgr
 
-mkdir -p "$CONFIG_DIR" "$PID_DIR" "$LOG_DIR"
-touch "$USER_FILE"
-
-chmod +x ./ssctl
 chmod +x /usr/local/bin/ssctl
+chmod +x /usr/local/bin/sslimit
+chmod +x /usr/local/bin/ssmgr
+chmod +x ./ssctl
+chmod +x ./sslimit
 chmod +x ./ssmgr
-chmod +x ./config
-chmod +x ./data_usage_limit
-chmod +x ./data_usage_reset
 
 apt-get update && apt-get install -y shadowsocks-libev simple-obfs iptables

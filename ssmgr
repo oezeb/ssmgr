@@ -1,10 +1,11 @@
 #!/bin/bash
 
-source "./config"
+USER_FILE="/etc/ss-users/ss_users.txt"
+CONFIG_DIR="/etc/ss-users/configs"
+PID_DIR="/var/run/ss-users"
 
-ensure_chain_exists() {
-    iptables -L $CHAIN_NAME -n &>/dev/null || iptables -N $CHAIN_NAME
-}
+mkdir -p "$CONFIG_DIR" "$PID_DIR"
+touch "$USER_FILE"
 
 gen_password() {
     head -c 12 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16
@@ -29,8 +30,6 @@ EOF
 }
 
 add_user() {
-    ensure_chain_exists
-
     local port=$1
     local user=$2
     local password=$3
@@ -47,23 +46,18 @@ add_user() {
 
     [[ -z "$password" ]] && password=$(gen_password)
 
+    gen_config "$port" "$password"
     echo "$port,$user,$password" >> "$USER_FILE"
     echo "Added user $user with password $password on port $port"
-
-    iptables -C INPUT  -p tcp --dport $port -j $CHAIN_NAME 2>/dev/null || iptables -A INPUT  -p tcp --dport $port -j $CHAIN_NAME
-    iptables -C OUTPUT -p tcp --sport $port -j $CHAIN_NAME 2>/dev/null || iptables -A OUTPUT -p tcp --sport $port -j $CHAIN_NAME
-
-    gen_config "$port" "$password"
     
     echo "Starting ss-user@$port service"
     systemctl daemon-reexec
     systemctl daemon-reload
     ssctl start "$port"
+    sslimit add "$port"
 }
 
 remove_user() {
-    ensure_chain_exists
-
     local port=$1
     
     if [[ -z "$port" ]]; then
@@ -72,55 +66,16 @@ remove_user() {
     fi
 
     ssctl stop "$port"
+    sslimit remove "$port"
     sed -i "/^$port,/d" "$USER_FILE"
-
-    iptables -D INPUT  -p tcp --dport $port -j $CHAIN_NAME 2>/dev/null
-    iptables -D OUTPUT -p tcp --sport $port -j $CHAIN_NAME 2>/dev/null
-    iptables -D INPUT  -p tcp --dport $port -j REJECT 2>/dev/null
-
     rm -f "$CONFIG_DIR/$port.json"
-    echo "Removed user on port $port"
-}
-
-update_iptables_for_port() {
-    local port=$1
-
-    iptables -D INPUT  -p tcp --dport $port -j $CHAIN_NAME 2>/dev/null
-    iptables -D OUTPUT -p tcp --sport $port -j $CHAIN_NAME 2>/dev/null
-
-    iptables -C INPUT  -p tcp --dport $port -j $CHAIN_NAME 2>/dev/null || iptables -A INPUT  -p tcp --dport $port -j $CHAIN_NAME
-    iptables -C OUTPUT -p tcp --sport $port -j $CHAIN_NAME 2>/dev/null || iptables -A OUTPUT -p tcp --sport $port -j $CHAIN_NAME
-}
-
-update_iptables() {
-    ensure_chain_exists
-
-    if [[ -n "$1" ]]; then
-        # update for one port
-        local port=$1
-        if grep -q "^$port," "$USER_FILE"; then
-            update_iptables_for_port "$port"
-        else
-            echo "❌ No such port in user list: $port"
-            return 1
-        fi
-    else
-        # update for all ports
-        while IFS=',' read -r port user password; do
-            update_iptables_for_port "$port"
-        done < "$USER_FILE"
-    fi
 }
 
 list_users() {
-    echo -e "PORT\tUSER\t\tPASSWORD\t\tUSAGE (MB)"
+    echo -e "PORT\tUSER\t\tPASSWORD"
     echo "------------------------------------------------------------"
-
     while IFS=',' read -r port user password; do
-        # Sum inbound + outbound bytes for this port from SS_TRAFFIC chain
-        bytes=$(iptables -L $CHAIN_NAME -v -x -n | grep ":$port" | awk '{sum+=$2} END {print sum}')
-        mb=$((bytes / 1024 / 1024))
-        printf "%-6s\t%-10s\t%-16s\t%6s MB\n" "$port" "$user" "$password" "$mb"
+        printf "%-6s\t%-10s\t%-16s\n" "$port" "$user" "$password"
     done < "$USER_FILE"
 }
 
@@ -128,7 +83,6 @@ usage() {
     echo "Usage:"
     echo "  $0 add <port> <username> [password]    # Add user (gen password if missing)"
     echo "  $0 remove <port>                       # Remove user"
-    echo "  $0 update [port]                       # Re-sync iptables"
     echo "  $0 list                                # Show users"
     exit 1
 }
@@ -136,7 +90,6 @@ usage() {
 case "$1" in
     add) add_user "$2" "$3" "$4" ;;
     remove) remove_user "$2" ;;
-    update) update_iptables ;;
     list) list_users ;;
     *) usage ;;
 esac
