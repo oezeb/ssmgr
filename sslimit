@@ -1,6 +1,6 @@
 #!/bin/bash
 # Set per-port quota in GB
-LIMIT_GB=1
+LIMIT_GB=200
 
 add() {
     local port=$1
@@ -60,10 +60,10 @@ current() {
 
 usage() {
     echo "Usage:"
-    echo "  $0 add <port>     - Add quota limit for a port"
-    echo "  $0 remove <port>  - Remove quota limit for a port"
-    echo "  $0 reset <port>   - Reset quota for a port back to $LIMIT_GB GB"
-    echo "  $0 current <port> - Show current usage for a port"
+    echo "  $0 add <port>     # Add quota limit for a port"
+    echo "  $0 remove <port>  # Remove quota limit for a port"
+    echo "  $0 reset <port>   # Reset quota for a port back to $LIMIT_GB GB"
+    echo "  $0 status <port>  # Show current usage for a port"
     exit 1
 }
 
