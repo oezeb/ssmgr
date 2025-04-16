@@ -1,24 +1,58 @@
 #!/bin/bash
+
+# Root check
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root" 
+   exit 1
+fi
+
 # Set per-port quota in GB
-LIMIT_GB=200
+DEFAULT_QUOTA_GB=200
+
+usage() {
+    echo "Usage:"
+    echo "  $0 add     -p <port> [-q <quota>] # Add quota limit (in GB) to a port"
+    echo "  $0 remove  -p <port>              # Remove quota limit for a port"
+    echo "  $0 reset   -p <port> [-q <quota>] # Reset quota usage (optional quota override)"
+    echo "  $0 status  -p <port> [-x]         # Show current usage for a port"
+    exit 1
+}
+
+CMD="$1"
+shift || usage
+
+PORT="" QUOTA="" EXTRA_OPTS=""
+while getopts "p:q:x" opt; do
+    case "$opt" in
+        p) PORT="$OPTARG" ;;
+        q) QUOTA="$OPTARG" ;;
+        x) EXTRA_OPTS="-x" ;;
+        *) usage ;;
+    esac
+done
+
+if [[ -z "$PORT" ]]; then
+    echo "Error: Port is required."
+    usage
+fi
 
 add() {
-    local port=$1
-    local limit_b=$((LIMIT_GB * 1024 * 1024 * 1024))
-    local chain="QUOTA_$port"
-    local cron_file="/etc/cron.d/${port}_quota_reset"
+    [[ -z "$QUOTA" ]] && QUOTA=$DEFAULT_QUOTA_GB
+    local quota_b=$((QUOTA * 1024 * 1024 * 1024))
+    local chain="QUOTA_$PORT"
+    local cron_file="/etc/cron.d/${PORT}_quota_reset"
 
     # Create a unique chain for this port
     iptables -t mangle -N $chain 2>/dev/null || true
     iptables -t mangle -F $chain
 
     # Allow up to LIMIT_GB
-    iptables -t mangle -A $chain -m quota --quota $limit_b -j RETURN
+    iptables -t mangle -A $chain -m quota --quota $quota_b -j RETURN
     iptables -t mangle -A $chain -j DROP
 
     # Direct input/output traffic for this port through the port-specific quota chain
-    iptables -t mangle -C PREROUTING -p tcp --dport $port -j $chain 2>/dev/null || iptables -t mangle -A PREROUTING -p tcp --dport $port -j $chain
-    iptables -t mangle -C OUTPUT -p tcp --sport $port -j $chain 2>/dev/null || iptables -t mangle -A OUTPUT -p tcp --sport $port -j $chain
+    iptables -t mangle -C PREROUTING -p tcp --dport $PORT -j $chain 2>/dev/null || iptables -t mangle -A PREROUTING -p tcp --dport $PORT -j $chain
+    iptables -t mangle -C OUTPUT -p tcp --sport $PORT -j $chain 2>/dev/null || iptables -t mangle -A OUTPUT -p tcp --sport $PORT -j $chain
 
     # Add monthly cron job to reset counters
     echo "0 0 1 * * root iptables -t mangle -Z $chain" > "$cron_file"
@@ -26,13 +60,12 @@ add() {
 }
 
 remove() {
-    local port=$1
-    local chain="QUOTA_$port"
-    local cron_file="/etc/cron.d/${port}_quota_reset"
+    local chain="QUOTA_$PORT"
+    local cron_file="/etc/cron.d/${PORT}_quota_reset"
 
     # Delete all rules referencing this port
-    iptables -t mangle -D PREROUTING -p tcp --dport $port -j $chain 2>/dev/null || true
-    iptables -t mangle -D OUTPUT -p tcp --sport $port -j $chain 2>/dev/null || true
+    iptables -t mangle -D PREROUTING -p tcp --dport $PORT -j $chain 2>/dev/null || true
+    iptables -t mangle -D OUTPUT -p tcp --sport $PORT -j $chain 2>/dev/null || true
 
     # Flush and delete the quota chain
     iptables -t mangle -F $chain 2>/dev/null || true
@@ -40,48 +73,30 @@ remove() {
 
     # Remove the corresponding cron job
     rm -f "$cron_file"
-
 }
 
 reset() {
-    local port=$1
-    local chain="QUOTA_$port"
-
-    iptables -t mangle -Z $chain
+    local chain="QUOTA_$PORT"
+    
+    if [[ -z "$QUOTA" ]]; then
+        iptables -t mangle -Z $chain
+    else
+        remove
+        add
+    fi
 }
 
 status() {
-    local port=$1
-    local chain="QUOTA_$port"
+    local chain="QUOTA_$PORT"
 
-    echo "Usage for port $port (chain: $chain):"
-    iptables -t mangle -L $chain -v -n
+    echo "Usage for port $PORT (chain: $chain):"
+    iptables -t mangle -L $chain -v -n $2
 }
 
-usage() {
-    echo "Usage:"
-    echo "  $0 add <port>     # Add quota limit for a port"
-    echo "  $0 remove <port>  # Remove quota limit for a port"
-    echo "  $0 reset <port>   # Reset quota for a port back to $LIMIT_GB GB"
-    echo "  $0 status <port>  # Show current usage for a port"
-    exit 1
-}
-
-# Check if we have root privileges
-if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root" 
-   exit 1
-fi
-
-# Check if we have a command and port
-if [[ $# -lt 2 ]]; then
-    usage
-fi
-
-case "$1" in
-    add) add "$2" ;;
-    remove) remove "$2" ;;
-    reset) reset "$2" ;;
-    status) status "$2" ;;
+case "$CMD" in
+    add) add ;;
+    remove) remove ;;
+    reset) reset ;;
+    status) status ;;
     *) usage ;;
 esac

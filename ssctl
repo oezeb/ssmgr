@@ -25,6 +25,9 @@ case "$1" in
     status)
         systemctl status "$SERVICE"
         ;;
+    is-active)
+        systemctl is-active "$SERVICE"
+        ;;
     enable)
         systemctl enable "$SERVICE"
         ;;

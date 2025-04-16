@@ -1,101 +1,150 @@
 #!/bin/bash
 
+# Root check
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root" 
+   exit 1
+fi
+
+# File Dirs
 USER_FILE="/etc/ss-users/ss_users.txt"
 CONFIG_DIR="/etc/ss-users/configs"
-PID_DIR="/var/run/ss-users"
-
-mkdir -p "$CONFIG_DIR" "$PID_DIR"
+mkdir -p "$CONFIG_DIR"
 touch "$USER_FILE"
 
-gen_password() {
-    head -c 12 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16
+usage() {
+    cat <<EOF
+Usage:
+  $0 add    -p <port> -u <username> [-k <password>] [-e <expiration_in_days>] [-q <quota>]
+            Add a new user. Generates password if not provided. 
+            Expiration is in days from now. Quota is in GB
+
+  $0 remove -p <port>
+            Remove user assigned to the port.
+
+  $0 list | ls
+            List all configured users.
+
+  $0 check-expired
+            Auto-check and stop/remove expired users.
+EOF
+    exit 1
 }
 
-gen_config() {
-    local port=$1
-    local password=$2
-    local config="$CONFIG_DIR/$port.json"
+CMD="$1"
+shift || usage
 
+PORT="" USER="" PASS="" EXP="" QUOTA=""
+while getopts ":p:u:k:e:q:" opt; do
+    case "$opt" in
+        p) PORT=$OPTARG ;;
+        u) USER=$OPTARG ;;
+        k) PASS=$OPTARG ;;
+        e) EXP=$OPTARG ;;
+        q) QUOTA=$OPTARG ;;
+        *) usage ;;
+    esac
+done
+
+add_user() {
+    if [[ -z "$PORT" || -z "$USER" ]]; then
+        echo "Error: Port and username are required."
+        usage
+    fi
+
+    if grep -q "^$PORT," "$USER_FILE"; then
+        echo "Port $PORT already assigned. Remove it first."
+        return 1
+    fi
+
+    [[ -z "$PASS" ]] && PASS=$(head -c 12 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)
+
+    # Calculate expiration date
+    local expiration_date=""
+    if [[ -n "$EXP" ]]; then
+        expiration_date=$(date -d "+$EXP days" +%Y-%m-%d)
+    fi
+
+    # Gen config file
+    local config="$CONFIG_DIR/$PORT.json"
     cat > "$config" <<EOF
 {
     "server": "0.0.0.0",
-    "server_port": $port,
-    "password": "$password",
+    "server_port": $PORT,
+    "password": "$PASS",
     "timeout": 300,
     "method":"chacha20-ietf-poly1305",
     "plugin":"obfs-server",
     "plugin_opts":"obfs=tls"
 }
 EOF
-}
 
-add_user() {
-    local port=$1
-    local user=$2
-    local password=$3
+    # Save user infos
+    echo "$PORT,$USER,$PASS,$expiration_date" >> "$USER_FILE"
+    echo "Added user $USER with password $PASS on port $PORT"
 
-    if [[ -z "$port" || -z "$user" ]]; then
-        echo "Usage: $0 add <port> <username> [password]"
-        return 1
-    fi
-
-    if grep -q "^$port," "$USER_FILE"; then
-        echo "Port $port already assigned. Remove it first."
-        return
-    fi
-
-    [[ -z "$password" ]] && password=$(gen_password)
-
-    gen_config "$port" "$password"
-    echo "$port,$user,$password" >> "$USER_FILE"
-    echo "Added user $user with password $password on port $port"
-    
-    echo "Starting ss-user@$port service"
+    # Starting service
+    echo "Starting ss-user@$PORT service"
     systemctl daemon-reexec
     systemctl daemon-reload
-    ssctl start "$port"
-    sslimit add "$port"
+    ssctl start "$PORT"
+    sslimit add -p "$PORT" -q "$QUOTA"
 }
 
 remove_user() {
-    local port=$1
-    
-    if [[ -z "$port" ]]; then
-        echo "Usage: $0 remove <port>"
-        return 1
+    if [[ -z "$PORT" ]]; then
+        echo "Error: Port is required."
+        usage
     fi
 
-    ssctl stop "$port"
-    sslimit remove "$port"
-    sed -i "/^$port,/d" "$USER_FILE"
-    rm -f "$CONFIG_DIR/$port.json"
+    ssctl stop "$PORT"
+    sslimit remove -p "$PORT"
+    sed -i "/^$PORT,/d" "$USER_FILE"
+    rm -f "$CONFIG_DIR/$PORT.json"
+    systemctl daemon-reload
+    echo "Removed user on port $PORT"
 }
 
 list_users() {
-    echo -e "PORT\tUSER\t\tPASSWORD"
-    echo "------------------------------------------------------------"
-    while IFS=',' read -r port user password; do
-        printf "%-6s\t%-10s\t%-16s\n" "$port" "$user" "$password"
+    echo -e "PORT\tUSER\t\tPASSWORD\t\tEXPIRES\t\tUSED\t\tQUOTA\t\tSTATUS"
+    echo "------------------------------------------------------------------------------------------------------------------------"
+    while IFS=',' read -r port user password expiration; do
+        # Get service status
+        local service_status=$(ssctl is-active "$port" 2>/dev/null)
+
+        # Get usage stats
+        local quota_status=$(sslimit status -p "$port" -x 2>/dev/null)
+        local used_bytes=$(echo "$quota_status" | awk '/RETURN/ {print $2}')
+        local quota_bytes=$(echo "$quota_status" | grep -oP 'quota: \K[0-9]+')
+
+        used_hr=$(numfmt --to=iec --suffix=B "$used_bytes" 2>/dev/null || echo "${used_bytes:-0}B")
+        quota_hr=$(numfmt --to=iec --suffix=B "$quota_bytes" 2>/dev/null || echo "N/A")
+
+        printf "%-6s\t%-10s\t%-20s\t%-10s\t%-8s\t%-8s\t%-12s\n" \
+            "$port" "$user" "$password" "${expiration:-N/A}" "$used_hr" "$quota_hr" "$service_status"
     done < "$USER_FILE"
 }
 
-usage() {
-    echo "Usage:"
-    echo "  $0 add <port> <username> [password]    # Add user (gen password if missing)"
-    echo "  $0 remove <port>                       # Remove user"
-    echo "  $0 list                                # Show users"
-    exit 1
+
+check_expired_users() {
+    local today=$(date +%Y-%m-%d)
+    local tmp_file=$(mktemp)
+
+    while IFS=',' read -r port user password expiration; do
+        echo "port=$port exp=$expiration today=$today"
+        if [[ -n "$expiration" && "$expiration" != "N/A" ]]; then
+            if [[ "$expiration" < "$today" ]]; then
+                echo "User $user on port $port has expired (expired on $expiration). Stopping..."
+                ssctl stop "$port"
+            fi
+        fi
+    done < "$USER_FILE"
 }
 
-# Check if we have root privileges
-if [[ $EUID -ne 0 ]]; then
-   echo "This script must be run as root" 
-   exit 1
-fi
-
-case "$1" in
-    add) add_user "$2" "$3" "$4" ;;
-    remove) remove_user "$2" ;;
-    list) list_users ;;
+case "$CMD" in
+    add) add_user ;;
+    remove) remove_user ;;
+    list|ls) list_users ;;
+    check-expired) check_expired_users ;;
     *) usage ;;
 esac
