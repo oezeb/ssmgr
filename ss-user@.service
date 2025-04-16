@@ -1,0 +1,13 @@
+[Unit]
+Description=Shadowsocks user instance on port %i
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=ss-server --fast-open --no-delay -c /etc/ss-users/configs/%i.json
+ExecReload=kill -HUP $MAINPID
+Restart=on-failure
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

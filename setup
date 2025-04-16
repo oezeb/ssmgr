@@ -1,0 +1,18 @@
+#!/bin/bash
+
+source ./config
+
+cp ./ss-user@.service /etc/systemd/system/ss-user@.service
+cp ./ssctl /usr/local/bin/ssctl
+
+mkdir -p "$CONFIG_DIR" "$PID_DIR" "$LOG_DIR"
+touch "$USER_FILE"
+
+chmod +x ./ssctl
+chmod +x /usr/local/bin/ssctl
+chmod +x ./ssmgr
+chmod +x ./config
+chmod +x ./data_usage_limit
+chmod +x ./data_usage_reset
+
+apt-get update && apt-get install -y shadowsocks-libev simple-obfs iptables
