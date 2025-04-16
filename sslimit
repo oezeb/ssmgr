@@ -50,7 +50,7 @@ reset() {
     iptables -t mangle -Z $chain
 }
 
-current() {
+status() {
     local port=$1
     local chain="QUOTA_$port"
 
@@ -82,6 +82,6 @@ case "$1" in
     add) add "$2" ;;
     remove) remove "$2" ;;
     reset) reset "$2" ;;
-    current) current "$2" ;;
+    status) status "$2" ;;
     *) usage ;;
 esac
