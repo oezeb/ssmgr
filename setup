@@ -6,16 +6,18 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-cp ./ss-user@.service /etc/systemd/system/ss-user@.service
-cp ./ssctl /usr/local/bin/ssctl
-cp ./sslimit /usr/local/bin/sslimit
-cp ./ssmgr /usr/local/bin/ssmgr
+mkdir -p /etc/ssmgr
+cp -r ./* /etc/ssmgr
 
-chmod +x /usr/local/bin/ssctl
-chmod +x /usr/local/bin/sslimit
-chmod +x /usr/local/bin/ssmgr
+chmod +x /etc/ssmgr/user
+chmod +x /etc/ssmgr/quota
+chmod +x /etc/ssmgr/service
+chmod +x /etc/ssmgr/ssmgr.py
+
+ln -s /etc/ssmgr/ssmgr.py /usr/local/bin/ssmgr
+ln -s /etc/ssmgr/ss-user@.service /etc/systemd/system/ss-user@.service
 
 echo "0 3 * * * root ssmgr check-expired" > /etc/cron.d/check-expired
 chmod 644 "/etc/cron.d/check-expired"
 
-apt-get update && apt-get install -y shadowsocks-libev simple-obfs iptables
+# apt-get update && apt-get install -y shadowsocks-libev simple-obfs iptables
